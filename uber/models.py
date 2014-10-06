@@ -26,6 +26,7 @@ def relationship(*args, **kwargs):
 class utcnow(FunctionElement):
     type = UTCDateTime()
 
+
 @compiles(utcnow, 'postgresql')
 def pg_utcnow(element, compiler, **kw):
     return "timezone('utc', current_timestamp)"
@@ -171,6 +172,8 @@ class MagModel:
                         value = int(float(value))
                     elif isinstance(column.type, UTCDateTime):
                         value = EVENT_TIMEZONE.localize(datetime.strptime(value, TIMESTAMP_FORMAT))
+                    elif isinstance(column.type, Date):
+                        value = datetime.strptime(value, DATE_FORMAT)
                 except:
                     pass
 
@@ -349,6 +352,7 @@ class Group(MagModel, TakesPaymentMixin):
                     total += DEALER_BADGE_PRICE
                 else:
                     total += state.get_group_price(attendee.registered)
+            total -= attendee.age_discount
         return total
 
     @property
@@ -371,6 +375,15 @@ class Group(MagModel, TakesPaymentMixin):
         return 1 if self.can_add else \
                0 if self.is_dealer else 5
 
+class AgeGroup(MagModel):
+    desc          = Column(UnicodeText)
+    min_age       = Column(Integer)
+    max_age       = Column(Integer)
+    discount      = Column(Integer)
+    can_register  = Column(Boolean, default=True)
+    can_volunteer = Column(Boolean, default=True)
+    consent_form  = Column(Boolean, default=False)
+    
 
 class Attendee(MagModel, TakesPaymentMixin):
     group_id = Column(UUID, ForeignKey('group.id', ondelete='SET NULL'), nullable=True)
@@ -385,9 +398,11 @@ class Attendee(MagModel, TakesPaymentMixin):
     cellphone     = Column(UnicodeText)
     no_cellphone  = Column(Boolean, default=False)
     email         = Column(UnicodeText)
-    age_group     = Column(Choice(AGE_GROUP_OPTS), default=AGE_UNKNOWN)
+    age_group_id  = Column(UUID, ForeignKey('age_group.id', ondelete='SET NULL'), nullable=True)
+    age_group     = relationship(AgeGroup, backref='attendees', foreign_keys=age_group_id)
+    birthdate     = Column(Date, nullable=True, default=None)
     reg_station   = Column(Integer, nullable=True)
-
+    
     interests   = Column(MultiChoice(INTEREST_OPTS))
     found_how   = Column(UnicodeText)
     comments    = Column(UnicodeText)
@@ -432,7 +447,7 @@ class Attendee(MagModel, TakesPaymentMixin):
     food_restrictions = relationship('FoodRestrictions', backref='attendee', uselist=False, cascade='delete')
 
     _repr_attr_names = ['full_name']
-    _unrestricted = {'first_name', 'last_name', 'international', 'zip_code', 'ec_phone', 'cellphone', 'email', 'age_group',
+    _unrestricted = {'first_name', 'last_name', 'international', 'zip_code', 'ec_phone', 'cellphone', 'email', 'age_group', 'birthdate',
                      'interests', 'found_how', 'comments', 'badge_type', 'affiliate', 'shirt', 'can_spam', 'no_cellphone',
                      'badge_printed_name', 'staffing', 'fire_safety_cert', 'requested_depts', 'amount_extra', 'payment_method'}
 
@@ -459,6 +474,9 @@ class Attendee(MagModel, TakesPaymentMixin):
 
         if AT_THE_CON and self.badge_num and self.is_new:
             self.checked_in = datetime.now(UTC)
+            
+        if COLLECT_EXACT_BIRTHDATE:
+            self.age_group = self.session.age_group_from_birthdate(self.birthdate)
 
         for attr in ['first_name', 'last_name']:
             value = getattr(self, attr)
@@ -580,6 +598,30 @@ class Attendee(MagModel, TakesPaymentMixin):
         return case([
             (or_(cls.first_name == None, cls.first_name == ''), 'zzz')
         ], else_ = func.lower(cls.last_name + ', ' + cls.first_name))
+        
+    @property
+    def can_volunteer(self):
+        if self.age_group: return self.age_group.can_volunteer
+        with Session() as session:
+            return session.age_group_from_birthdate(self.birthdate).can_volunteer
+            
+    @property
+    def can_register(self):
+        if self.age_group: return self.age_group.can_register
+        with Session() as session:
+            return session.age_group_from_birthdate(self.birthdate).can_register
+            
+    @property
+    def age_discount(self):
+        if self.age_group: return self.age_group.discount
+        with Session() as session:
+            return session.age_group_from_birthdate(self.birthdate).discount
+            
+    @property
+    def consent_form(self):
+        if self.age_group: return self.age_group.consent_form
+        with Session() as session:
+            return session.age_group_from_birthdate(self.birthdate).consent_form
 
     @property
     def banned(self):
@@ -691,7 +733,7 @@ class Attendee(MagModel, TakesPaymentMixin):
     def possible_and_current(self):
         jobs = [s.job for s in self.shifts]
         for job in jobs:
-            job.already_signed_up = True
+            job.taken = True
         jobs.extend(self.possible)
         return sorted(jobs, key=lambda j: j.start_time)
 
@@ -916,10 +958,10 @@ class Job(MagModel):
                    and self.no_overlap(s)]
 
 class Shift(MagModel):
-    job_id      = Column(UUID, ForeignKey('job.id'))
-    job         = relationship(Job, backref='shifts', cascade='delete')
-    attendee_id = Column(UUID, ForeignKey('attendee.id'))
-    attendee    = relationship(Attendee, backref='shifts', cascade='delete')
+    job_id      = Column(UUID, ForeignKey('job.id', ondelete='cascade'))
+    job         = relationship(Job, backref='shifts')
+    attendee_id = Column(UUID, ForeignKey('attendee.id', ondelete='cascade'))
+    attendee    = relationship(Attendee, backref='shifts')
     worked      = Column(Choice(WORKED_STATUS_OPTS), default=SHIFT_UNMARKED)
     rating      = Column(Choice(RATING_OPTS), default=UNRATED)
     comment     = Column(UnicodeText)
@@ -1146,8 +1188,23 @@ class Session(SessionManager):
         def logged_in_volunteer(self):
             return self.attendee(cherrypy.session['staffer_id'])
 
+        def jobs_for_signups(self):
+            fields = ['name', 'location_label', 'description', 'weight', 'start_time_local', 'duration', 'weighted_hours', 'restricted', 'extra15', 'taken']
+            return [job.to_dict(fields) for job in self.logged_in_volunteer().possible_and_current]
+
         def get_account_by_email(self, email):
             return self.query(AdminAccount).join(Attendee).filter(func.lower(Attendee.email) == func.lower(email)).one()
+            
+        def age_group_from_birthdate(self, birthdate):
+            if not birthdate: return None
+            calc_date = EPOCH if localized_now() <= EPOCH else localized_now()
+            attendee_age = int((datetime.date(calc_date) - datetime.date(birthdate)).days / 365.2425)
+
+            age_groups = self.query(AgeGroup)
+            for current_age_group in age_groups:
+                if current_age_group.min_age <= attendee_age <= current_age_group.max_age:
+                    return current_age_group
+            return None
 
         def no_email(self, subject):
             return not self.query(Email).filter_by(subject=subject).all()
