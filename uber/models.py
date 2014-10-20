@@ -173,7 +173,7 @@ class MagModel:
                     elif isinstance(column.type, UTCDateTime):
                         value = EVENT_TIMEZONE.localize(datetime.strptime(value, TIMESTAMP_FORMAT))
                     elif isinstance(column.type, Date):
-                        value = datetime.strptime(value, DATE_FORMAT)
+                        value = datetime.strptime(value, DATE_FORMAT).date()
                 except:
                     pass
 
@@ -383,7 +383,6 @@ class AgeGroup(MagModel):
     can_register  = Column(Boolean, default=True)
     can_volunteer = Column(Boolean, default=True)
     consent_form  = Column(Boolean, default=False)
-    
 
 class Attendee(MagModel, TakesPaymentMixin):
     group_id = Column(UUID, ForeignKey('group.id', ondelete='SET NULL'), nullable=True)
@@ -392,17 +391,22 @@ class Attendee(MagModel, TakesPaymentMixin):
     placeholder   = Column(Boolean, default=False)
     first_name    = Column(UnicodeText)
     last_name     = Column(UnicodeText)
-    international = Column(Boolean, default=False)
-    zip_code      = Column(UnicodeText)
-    ec_phone      = Column(UnicodeText)
-    cellphone     = Column(UnicodeText)
-    no_cellphone  = Column(Boolean, default=False)
     email         = Column(UnicodeText)
     age_group_id  = Column(UUID, ForeignKey('age_group.id', ondelete='SET NULL'), nullable=True)
     age_group     = relationship(AgeGroup, backref='attendees', foreign_keys=age_group_id)
     birthdate     = Column(Date, nullable=True, default=None)
-    reg_station   = Column(Integer, nullable=True)
-    
+
+    international = Column(Boolean, default=False)
+    zip_code      = Column(UnicodeText)
+    address1      = Column(UnicodeText)
+    address2      = Column(UnicodeText)
+    city          = Column(UnicodeText)
+    region        = Column(UnicodeText)
+    country       = Column(UnicodeText)
+    no_cellphone  = Column(Boolean, default=False)
+    ec_phone      = Column(UnicodeText)
+    cellphone     = Column(UnicodeText)
+
     interests   = Column(MultiChoice(INTEREST_OPTS))
     found_how   = Column(UnicodeText)
     comments    = Column(UnicodeText)
@@ -420,6 +424,7 @@ class Attendee(MagModel, TakesPaymentMixin):
     extra_merch  = Column(UnicodeText)
     got_merch    = Column(Boolean, default=False)
 
+    reg_station   = Column(Integer, nullable=True)
     registered = Column(UTCDateTime, server_default=utcnow())
     checked_in = Column(UTCDateTime, nullable=True)
 
@@ -447,9 +452,10 @@ class Attendee(MagModel, TakesPaymentMixin):
     food_restrictions = relationship('FoodRestrictions', backref='attendee', uselist=False, cascade='delete')
 
     _repr_attr_names = ['full_name']
-    _unrestricted = {'first_name', 'last_name', 'international', 'zip_code', 'ec_phone', 'cellphone', 'email', 'age_group', 'birthdate',
-                     'interests', 'found_how', 'comments', 'badge_type', 'affiliate', 'shirt', 'can_spam', 'no_cellphone',
-                     'badge_printed_name', 'staffing', 'fire_safety_cert', 'requested_depts', 'amount_extra', 'payment_method'}
+    _unrestricted = {'first_name', 'last_name', 'international', 'zip_code', 'address1', 'address2', 'city', 'region', 'country',
+                     'ec_phone', 'cellphone', 'email', 'age_group', 'birthdate', 'interests', 'found_how', 'comments', 'badge_type',
+                     'affiliate', 'shirt', 'can_spam', 'no_cellphone', 'badge_printed_name', 'staffing', 'fire_safety_cert', 'requested_depts',
+                     'amount_extra', 'payment_method'}
 
     def on_delete(self):
         #_assert_badge_lock()
@@ -624,6 +630,12 @@ class Attendee(MagModel, TakesPaymentMixin):
             return session.age_group_from_birthdate(self.birthdate).consent_form
 
     @property
+    def age_group_desc(self):
+        if self.age_group: return self.age_group.desc
+        with Session() as session:
+            return session.age_group_from_birthdate(self.birthdate).desc
+
+    @property
     def banned(self):
         return self.full_name in BANNED_ATTENDEES
 
@@ -656,7 +668,7 @@ class Attendee(MagModel, TakesPaymentMixin):
 
     @property
     def has_personalized_badge(self):
-        return self.badge_type in [STAFF_BADGE, SUPPORTER_BADGE]
+        return self.badge_type in PREASSIGNED_BADGE_TYPES
 
     @property
     def donation_swag(self):
@@ -1197,8 +1209,8 @@ class Session(SessionManager):
             
         def age_group_from_birthdate(self, birthdate):
             if not birthdate: return None
-            calc_date = EPOCH if localized_now() <= EPOCH else localized_now()
-            attendee_age = int((datetime.date(calc_date) - datetime.date(birthdate)).days / 365.2425)
+            calc_date = EPOCH.date() if date.today() <= EPOCH.date() else date.today()
+            attendee_age = int((calc_date - birthdate).days / 365.2425)
 
             age_groups = self.query(AgeGroup)
             for current_age_group in age_groups:
