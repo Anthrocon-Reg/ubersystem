@@ -495,7 +495,7 @@ class Attendee(MagModel, TakesPaymentMixin):
 
         if self.badge_type == PSEUDO_GROUP_BADGE:
             self.badge_type = ATTENDEE_BADGE
-        elif self.badge_type == PSEUDO_DEALER_BADGE:
+        elif self.badge_type == PSEUDO_DEALER_BADGE or self.badge_type == IND_DEALER_BADGE:
             self.badge_type = ATTENDEE_BADGE
             self.ribbon = DEALER_RIBBON
 
@@ -655,10 +655,10 @@ class Attendee(MagModel, TakesPaymentMixin):
         return badge
 
     @property
-    def is_transferrable(self):
+    def is_transferable(self):
         return not self.is_new and not self.trusted and not self.checked_in \
            and self.paid in [HAS_PAID, PAID_BY_GROUP] \
-           and self.badge_type not in [STAFF_BADGE, GUEST_BADGE]
+           and self.badge_type in TRANSFERABLE_BADGE_TYPES
 
     @property
     def gets_shirt(self):

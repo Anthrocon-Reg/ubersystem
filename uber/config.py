@@ -74,7 +74,7 @@ class State:
 
     @property
     def PREREG_BADGE_TYPES(self):
-        types = [ATTENDEE_BADGE, PSEUDO_DEALER_BADGE]
+        types = [ATTENDEE_BADGE, PSEUDO_DEALER_BADGE, IND_DEALER_BADGE]
         for reg_open, badge_type in [(self.BEFORE_GROUP_PREREG_TAKEDOWN, PSEUDO_GROUP_BADGE)]:
             if reg_open:
                 types.append(badge_type)
@@ -188,6 +188,7 @@ for _badge_type, _range in _config['badge_ranges'].items():
 
 SHIFTLESS_DEPTS = {globals()[dept.upper()] for dept in SHIFTLESS_DEPTS}
 PREASSIGNED_BADGE_TYPES = [globals()[badge_type.upper()] for badge_type in PREASSIGNED_BADGE_TYPES]
+TRANSFERABLE_BADGE_TYPES = [globals()[badge_type.upper()] for badge_type in TRANSFERABLE_BADGE_TYPES]
 
 SEASON_EVENTS = _config['season_events']
 

@@ -42,28 +42,26 @@
     <td> <b>Email Address:</b> </td>
     <td> <input type="text" name="email" value="{{ attendee.email }}" class="focus" /> </td>
 </tr>
-<tr>
-    <td> <b>Postal Code:</b> </td>
-    <td>
-        <input type="text" name="zip_code" value="{{ attendee.zip_code }}" />
-        {% checkbox attendee.international %} I'm coming from outside the US.
-    </td>
-</tr>
+{% include "preregistration/address.html" %}
 {% include "preregistration/phone_numbers.html" %}
+{% if COLLECT_INTERESTS %}
 <tr>
     <td> What interests you? </td>
     <td> {% checkgroup attendee.interests %} </td>
 </tr>
+{% endif %}
 <tr>
     <td></td>
     <td> <input type="submit" value="{% if attendee.placeholder %}Register{% else %}Update My Info{% endif %}" id="updateButton"/> </td>
 </tr>
+{% if attendee.is_transferable %}
 <tr>
     <td></td>
     <td>
         <button type="button" onClick='location.href="transfer_badge?id={{ attendee.id }}"'>Transfer my Badge</button>
     </td>
 </tr>
+{% endif %}
 </table>
 
 </form>

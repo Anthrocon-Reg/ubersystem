@@ -152,7 +152,7 @@
         {% endif %}
         {% if attendee.badge_type == STAFF_BADGE %}
             &nbsp;&nbsp; [{{ attendee.hotel_status }}]
-        {% elif attendee.is_transferrable %}
+        {% elif attendee.is_transferable %}
             &nbsp;&nbsp; [<a href="../preregistration/confirm?id={{ attendee.id }}">Confirm/Transfer</a>]
         {% endif %}
     </td>
@@ -240,11 +240,11 @@
 </tr>
 {% endif %}
 <tr>
-    <td class="maybe_bold"> <nobr>Emergency Contact</nobr> <nobr>Name:</nobr> </td>
+    <td class="maybe_bold"> <nobr>Backup Phone Name:</nobr> </td>
     <td> <input type="text" name="ec_name" value="{{ attendee.ec_name }}" /> </td>
 </tr>
 <tr>
-    <td class="maybe_bold"> <nobr>Emergency Contact</nobr> <nobr>Phone Number:</nobr> </td>
+    <td class="maybe_bold"> <nobr>Backup Phone Number:</nobr> </td>
     <td> <input type="text" name="ec_phone" value="{{ attendee.ec_phone }}" /> </td>
 </tr>
 <tr>
