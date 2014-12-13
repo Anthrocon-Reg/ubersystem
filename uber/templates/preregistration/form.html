@@ -12,23 +12,6 @@ $(document).ready(function(){
   
 });
 {% endif %}
-
-// This section was to allow people to register as individual dealers.
-// It's not in use right now, and should be taken out if we don't end up using it.
-function setDealer() {
-    if ($('#dealeropt').is(':checked')) {
-        $("input[name='badge_type']").val("{{ IND_DEALER_BADGE }}");
-    } else {
-        $("input[name='badge_type']").val("{{ ATTENDEE_BADGE }}");
-    }
-}
-
-{% if attendee.badge_type == IND_DEALER_BADGE %}
-$(document).ready(function() {
-        $('#dealeropt').prop('checked', true);
-    }
-)
-{% endif %}
 </script>
 
 <div class="panel panel-default">
@@ -62,10 +45,11 @@ $(document).ready(function() {
 {% if not attendee.is_dealer %}
 {% include "preregistration/badge_choice.html" %}
 <div class="form-group">
-    <p class="help-block col-sm-8 col-sm-offset-2"><strong>Dealers:</strong> {% if BEFORE_DEALER_REG_START %}Registrations for dealer memberships begins December 15.{% endif %}</p>
+    <p class="help-block col-sm-8 col-sm-offset-2"><strong>Dealers:</strong>
+        {% if BEFORE_DEALER_REG_PUBLIC %}Registrations for dealer memberships begins December 15.
+        {% else %}Please register <a href="{{ URL_BASE }}/preregistration/dealer_registration">here</a>.
+        {% endif %}</p>
 </div>
-
-{% endif %}
 
 <div class="group_fields hide">
     <div class="form-group">
@@ -85,36 +69,53 @@ $(document).ready(function() {
     </div>
     </div>
 </div>
+{% endif %}
 
 {% if attendee.is_dealer %}
     <div class="form-group">
-    <label for="name" class="col-sm-2 control-label">Business Name</label>
+        <label for="name" class="col-sm-2 control-label">Total Cost:</label>
+        <div class="col-sm-6" id="cost">
+        </div>
+    </div>
+
+    <div class="form-group">
+    <label for="name" class="col-sm-2 control-label">Dealership Name</label>
     <div class="col-sm-6">
-      <input class="form-control" type="text" class="focus" name="name" value="{{ group.name }}" />
+      <input class="form-control" type="text" class="focus" name="name" value="{{ group.name }}" maxlength="40" />
     </div>
     </div>
 
     <div class="form-group">
     <label for="tables" class="col-sm-2 control-label">Tables</label>
     <div class="col-sm-6">
-      <select class="form-control" name="tables">
-                {% int_options 1 MAX_TABLES group.tables %}
-            </select> ({{ TABLE_PRICES }})
-            
+      <select class="form-control" name="tables" onChange="setBadgesLimit(); setExtraOpts(); setDealerCost()">
+                {% options TABLE_OPTS group.tables %}
+            </select>
     </div>
+    </div>
+
     <div class="form-group">
     <p class="help-block col-sm-6 col-sm-offset-2">[<i>You may contact us via <a href='{{ CONTACT_URL }}'>{{ CONTACT_URL }}</a> to request more than {{ MAX_TABLES }} tables.</i>]</p>
     </div>
 
+    <div class="form-group" id="table_extras">
+        <label for="tables" class="col-sm-2 control-label">Table Extras</label>
+        <div class="col-sm-6">
+            {% checkgroup group.table_extras %}
+        </div>
+    </div>
     <div class="form-group">
-    <label for="badges" class="col-sm-2 control-label">Badges</label>
+        <p class="help-block col-sm-6 col-sm-offset-2">Island/Quad table includes two 120V outlets.</p>
+    </div>
+
+    <div class="form-group">
+    <label for="badges" class="col-sm-2 control-label">Memberships</label>
     <div class="col-sm-6">
-      <select class="form-control" name="badges">{% int_options 1 MAX_DEALERS badges %}</select>
-                (${{ DEALER_BADGE_PRICE }} each)
+      <select class="form-control" name="badges" onChange="setDealerCost()">{% int_options 1 MAX_DEALERS badges %}</select>
     </div>
     </div>
     <div class="form-group">
-    <p class="help-block col-sm-6 col-sm-offset-2">The number of people working your table.</p>
+    <p class="help-block col-sm-6 col-sm-offset-2">The number of people working your table, including yourself.</p>
     </div>
 
     <div class="form-group">
@@ -137,6 +138,13 @@ $(document).ready(function() {
     <div class="form-group">
     <p class="help-block col-sm-6 col-sm-offset-2">The one you want us to link on our website, or n/a</p>
     </div>
+    {% else %}
+    <div class="form-group">
+    <label for="website" class="col-sm-2 control-label">Pennsylvania Tax ID</label>
+    <div class="col-sm-6">
+      <input class="form-control" type="text" name="website" value="{{ group.website }}" size="40" />
+    </div>
+    </div>
     {% endif %}
 
     <div class="form-group">
@@ -146,13 +154,13 @@ $(document).ready(function() {
     </div>
     </div>
     <div class="form-group">
-    <p class="help-block col-sm-6 col-sm-offset-2">For our website; please keep to one sentence.</p>
+    <p class="help-block col-sm-6 col-sm-offset-2">Please keep to one sentence.</p>
     </div>
 
         <div class="form-group">
     <label for="special_needs" class="col-sm-2 control-label">Special Requests</label>
     <div class="col-sm-6">
-      <textarea class="form-control" name="special_needs" rows="4" placeholder="E.g., power needs, who to sit next to, who not to sit next to.">{{ group.special_needs }}</textarea>
+      <textarea class="form-control" name="special_needs" rows="4" placeholder="E.g., specific table, who you would like to sit near, who you would not like to sit near.">{{ group.special_needs }}</textarea>
     </div>
     </div>
     <div class="form-group">
