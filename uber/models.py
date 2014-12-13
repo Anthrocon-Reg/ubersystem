@@ -295,6 +295,10 @@ class Group(MagModel, TakesPaymentMixin):
             self.leader.ribbon = DEALER_RIBBON
 
     @property
+    def is_new(self):
+        return not instance_state(self).persistent
+
+    @property
     def sorted_attendees(self):
         self.attendees.sort(key=lambda a: (a.is_unassigned, a.id != self.leader_id, a.full_name))
         return self.attendees
@@ -311,6 +315,16 @@ class Group(MagModel, TakesPaymentMixin):
                 return ribbon
         else:
             return DEALER_ASST_RIBBON if self.is_dealer else NO_RIBBON
+
+    @property
+    def ribbon_and_or_badge(self):
+        badge_being_claimed = self.floating[0]
+        if badge_being_claimed.ribbon != NO_RIBBON and badge_being_claimed.badge_type != ATTENDEE_BADGE:
+            return badge_being_claimed.badge_type_label + " / " + self.ribbon_label
+        elif badge_being_claimed.ribbon != NO_RIBBON:
+            return badge_being_claimed.ribbon_label
+        else:
+            return badge_being_claimed.badge_type_label
 
     @property
     def is_dealer(self):
@@ -566,7 +580,7 @@ class Attendee(MagModel, TakesPaymentMixin):
     @property
     def ribbon_and_or_badge(self):
         if self.ribbon != NO_RIBBON and self.badge_type != ATTENDEE_BADGE:
-            return self.badge_type_label + "/" + self.ribbon_label
+            return self.badge_type_label + " / " + self.ribbon_label
         elif self.ribbon != NO_RIBBON:
             return self.ribbon_label
         else:

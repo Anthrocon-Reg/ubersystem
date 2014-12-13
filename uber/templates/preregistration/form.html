@@ -13,8 +13,86 @@ $(document).ready(function(){
 });
 {% endif %}
 </script>
+{% if attendee.is_dealer %}
+<script type="text/javascript">
+    $(document).ready(function() {
+        setBadgesLimit();
+        setDealerCost();
+        setExtraOpts();
+        donationChanged();
+
+        $('[name="table_extras"]').attr("onClick","setDealerCost()");
+    });
+
+    function setBadgesLimit() {
+        var current_options = $("[name='badges'] option").length;
+        if ($.val("tables") <= 1) {
+            var badge_num = 2;
+        } else {
+            var badge_num = parseInt($.val("tables")) + 1;
+        }
+
+        if (current_options > badge_num) {
+            for (i = badge_num + 1; i <= current_options; i++) {
+                $("[name='badges'] option[value='" + i + "']").remove()
+            }
+        } else if (current_options < badge_num) {
+            for (i = current_options + 1; i <= badge_num; i++) {
+                $("[name='badges']").append('<option value="'+ i +'">'+ i +'</option>')
+            }
+        }
+    }
+
+    // This affects the display only.
+    function setDealerCost() {
+        $("#cost").empty();
+        var table_cost = 0;
+        var badge_cost = 0;
+        var extra_cost = 0;
+        var kickin_cost = $.val("amount_extra");
+
+        // Cost for tables
+        if ($.val("tables") == 0.5) {
+            table_cost = 40;
+        } else if ($.val("tables") == 1) {
+            table_cost = 100;
+        } else if ($.val("tables") == 2) {
+            table_cost = 350;
+        } else if ($.val("tables") == 3) {
+            table_cost = 600;
+        } else if ($.val("tables") == 4) {
+            table_cost = 999;
+        }
+
+        // Cost for badges
+        badge_cost = {{ BADGE_PRICE }} * $.val("badges");
+
+        // Extra options cost
+        if ($("input[value='{{ POWER_TABLE }}']:checked").length) {
+            extra_cost += 60;
+        }
+
+        if ($("input[value='{{ WALL_TABLE }}']:checked").length) {
+            extra_cost += 10;
+        }
+
+        total_cost = table_cost + badge_cost + extra_cost + kickin_cost;
+        $("#cost").html("$"+ total_cost);
+    }
+
+    function setExtraOpts() {
+        if ($.val("tables") == 4) {
+            $('[name="table_extras"]').prop('checked', false);
+            $('#table_extras').hide();
+        } else {
+            $('#table_extras').show();
+        }
+    }
+</script>
+{% endif %}
 
 <div class="panel panel-default">
+{% if not attendee.is_dealer %}
 <div class="row bs-wizard" style="border-bottom:0;border-top:0;">   
     <div class="col-xs-4 bs-wizard-step active">
       <div class="text-center bs-wizard-stepnum">Step 1</div>
@@ -35,15 +113,18 @@ $(document).ready(function(){
       <div class="bs-wizard-info text-center">Done</div>
     </div>
 </div>
+{% endif %}
 
 <form method="post" action="form" class="form-horizontal" role="form">
 <input type="hidden" name="badge_type" value="{{ attendee.badge_type }}" />
 {% if edit_id %}
     <input type="hidden" name="edit_id" value="{{ edit_id }}" />
 {% endif %}
-
-{% if not attendee.is_dealer %}
+{% if attendee.is_dealer %}
+<span><center><h2>Dealer Application</h2></center></span>
+{% endif %}
 {% include "preregistration/badge_choice.html" %}
+{% if not attendee.is_dealer %}
 <div class="form-group">
     <p class="help-block col-sm-8 col-sm-offset-2"><strong>Dealers:</strong>
         {% if BEFORE_DEALER_REG_PUBLIC %}Registrations for dealer memberships begins December 15.

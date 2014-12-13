@@ -18,7 +18,7 @@ def check_dealer(group):
     if not group.address and COLLECT_INTERESTS:
         return 'Dealers are required to provide an address for tax purposes'
     elif not group.wares:
-        return 'You must provide a detail explanation of what you sell for us to evaluate your submission'
+        return 'You must provide a detailed explanation of what you sell for us to evaluate your submission'
     elif not group.website:
         if COLLECT_INTERESTS:
             return "Please enter your business' website address"
@@ -283,6 +283,7 @@ class Root:
         return {
             'message':  message,
             'group_id': group_id,
+            'group': group,
             'attendee': attendee,
             'affiliates': session.affiliates()
         }
