@@ -3,6 +3,22 @@
 {% block backlink %}{% endblock %}
 {% block content %}
 
+<script type="text/javascript">
+function PopIt() { if($('.stripe_checkout_app').filter(":hidden").length){
+        /* don't return anything */
+        } else {
+        return "You're not done registering! Please wait until you see the confirmation page.";
+    } }
+function UnPopIt()  { /* nothing to return */ }
+
+jQuery(document).ready(function() {
+window.onbeforeunload = PopIt;
+jQuery("a").click(function(){ window.onbeforeunload = UnPopIt; });
+$(".buttonsView").children().click(function(){ window.onbeforeunload = UnPopIt; });
+$(".stripe").css('display', 'inline');
+});
+</script>
+
 <div class="masthead">
 </div>
 
@@ -28,23 +44,8 @@
     </div>
 </div>
 
-<div class="row">
-<div class="row">
-<div class="col-sm-8 col-sm-offset-2">
-    <div class="col-sm-5 text-center">
-        {% stripe_form prereg_payment charge %}
-    </div>
-    <div class="col-sm-2 text-center">
-        or
-    </div>
-    <div class="col-sm-5 text-center">
-        <a href="form">{% stripe_button "Add Another Prereg" %}</a>
-    </div>
-</div>
-</div>
-</div>
-
-<table class="charge table footable" data-sort="false">
+<div class="panel">
+    <table class="charge table footable" data-sort="false">
 <thead><tr>
     <th>Preregistration</th>
     <th data-hide="phone" data-sort-ignore="true">Details</th>
@@ -98,8 +99,30 @@
     </tr>
 </tfoot>
 
-</table>
+</table></div>
 {% endif %}
+
+<div class="row">
+<div class="row">
+    <div class="text-center">
+        {% if AT_THE_CON %}
+        <div class="bg-danger" style="margin: 20px; padding: 10px;"><strong>NOTE: A government-issued ID is required to pick up your badge.
+            <br/>If you pay now and cannot pick up your badge, there are no refunds!</strong></div>
+        <div class="row">
+            <a href="index?payment_method={{ CASH }}"><button class="btn btn-success">Pay with Cash</button></a>
+            {% if not OFFLINE_MODE %}{% stripe_form take_payment charge %}{% endif %}
+            <a href="index?payment_method={{ SQUARE }}"><button class="btn btn-info">Pay with Card at the Desk</button></a>
+        {% else %}
+            {% stripe_form take_payment charge %}
+        {% endif %}
+    </div>
+    <div class="text-center">
+        <br/>or<br/><br/>
+        <a href="form"><button class="btn btn-default">Add Another Person</button></a>
+    </div>
+</div>
+</div>
+</div>
 
 {% include "preregistration/disclaimers.html" %}
 </div>
