@@ -26,7 +26,6 @@ def relationship(*args, **kwargs):
 class utcnow(FunctionElement):
     type = UTCDateTime()
 
-
 @compiles(utcnow, 'postgresql')
 def pg_utcnow(element, compiler, **kw):
     return "timezone('utc', current_timestamp)"
@@ -230,7 +229,7 @@ class NightsMixin(object):
 
     @property
     def setup_teardown(self):
-        return self.wednesday or self.sunday
+        return any(night for night in self.nights_ints if night not in CORE_NIGHTS)
 
     locals().update({mutate(name): _night(mutate(name)) for name in NIGHT_NAMES for mutate in [str.upper, str.lower]})
 
@@ -370,6 +369,10 @@ class Group(MagModel, TakesPaymentMixin):
         return total
 
     @property
+    def new_badge_cost(self):
+        return DEALER_BADGE_PRICE if self.tables else state.get_group_price(localized_now())
+
+    @property
     def badge_cost(self):
         total = 0
         for attendee in self.attendees:
@@ -470,6 +473,7 @@ class Attendee(MagModel, TakesPaymentMixin):
     paid             = Column(Choice(PAYMENT_OPTS), default=NOT_PAID)
     overridden_price = Column(Integer, nullable=True)
     amount_paid      = Column(Integer, default=0)
+    donation_tier    = Column(Choice(ADMIN_DONATION_OPTS), default=NO_DONATION)
     amount_extra     = Column(Choice(DONATION_TIER_OPTS, allow_unspecified=True), default=0)
     amount_refunded  = Column(Integer, default=0)
     payment_method   = Column(Choice(PAYMENT_METHOD_OPTS), nullable=True)
@@ -484,11 +488,11 @@ class Attendee(MagModel, TakesPaymentMixin):
     nonshift_hours   = Column(Integer, default=0)
     past_years       = Column(UnicodeText)
 
-    no_shirt          = relationship('NoShirt', backref='attendee', uselist=False, cascade='delete')
-    admin_account     = relationship('AdminAccount', backref='attendee', uselist=False, cascade='delete')
-    hotel_requests    = relationship('HotelRequests', backref='attendee', uselist=False, cascade='delete')
-    room_assignments  = relationship('RoomAssignment', backref='attendee', uselist=False, cascade='delete')
-    food_restrictions = relationship('FoodRestrictions', backref='attendee', uselist=False, cascade='delete')
+    no_shirt          = relationship('NoShirt', backref=backref('attendee', load_on_pending=True), uselist=False, cascade='all,delete-orphan')
+    admin_account     = relationship('AdminAccount', backref=backref('attendee', load_on_pending=True), uselist=False, cascade='all,delete-orphan')
+    hotel_requests    = relationship('HotelRequests', backref=backref('attendee', load_on_pending=True), uselist=False, cascade='all,delete-orphan')
+    room_assignments  = relationship('RoomAssignment', backref=backref('attendee', load_on_pending=True), uselist=False, cascade='all,delete-orphan')
+    food_restrictions = relationship('FoodRestrictions', backref=backref('attendee', load_on_pending=True), uselist=False, cascade='all,delete-orphan')
 
     _repr_attr_names = ['full_name']
     _unrestricted = {'first_name', 'last_name', 'international', 'zip_code', 'address1', 'address2', 'city', 'region', 'country', 'ec_name',
@@ -514,16 +518,15 @@ class Attendee(MagModel, TakesPaymentMixin):
         if self.birthdate == '':
             self.birthdate = None
 
-        if MODE != "magstock":
-            if not self.gets_shirt:
-                self.shirt = NO_SHIRT
+        if not self.shirt_eligible:
+            self.shirt = NO_SHIRT
 
         if self.paid != REFUNDED:
             self.amount_refunded = 0
 
         if AT_THE_CON and self.badge_num and self.is_new:
             self.checked_in = datetime.now(UTC)
-            
+
         if COLLECT_EXACT_BIRTHDATE:
             self.age_group = self.session.age_group_from_birthdate(self.birthdate)
 
@@ -533,13 +536,15 @@ class Attendee(MagModel, TakesPaymentMixin):
                 setattr(self, attr, value.title())
 
     def _status_adjustments(self):
-        old_status = self.orig_value_of('status')
-        old_amount_paid = self.orig_value_of('amount_paid')
-        if old_status == self.status and old_amount_paid != self.amount_paid:
-            if self.paid == NOT_PAID or self.placeholder:
-                self.status = NEW_STATUS
-            elif self.paid == HAS_PAID or self.paid == NEED_NOT_PAY:
+        if self.watchlist_entry and self.status == NEW_STATUS:
+            self.status = DEFERRED_STATUS
+
+        if self.status == NEW_STATUS and not self.placeholder and self.first_name:
+            if (self.paid == HAS_PAID or self.paid == NEED_NOT_PAY) or (self.paid == PAID_BY_GROUP and not self.group.amount_unpaid):
                 self.status = COMPLETED_STATUS
+        elif self.status == INVALID_STATUS and self.admin_account:
+            Tracking.track(DELETED, self.admin_account)
+            self.session.delete(self.admin_account)
 
     def _badge_adjustments(self):
         #_assert_badge_lock()
@@ -603,7 +608,7 @@ class Attendee(MagModel, TakesPaymentMixin):
 
     @property
     def badge_cost(self):
-        registered = self.registered or localized_now()
+        registered = self.registered_local if self.registered else localized_now()
         if self.paid in [PAID_BY_GROUP, NEED_NOT_PAY]:
             return 0
         elif self.overridden_price is not None:
@@ -642,6 +647,14 @@ class Attendee(MagModel, TakesPaymentMixin):
         return self.group and self.id == self.group.leader_id
 
     @property
+    def can_check_in(self):
+        return self.paid != NOT_PAID and self.status in [COMPLETED_STATUS, PRINTED_STATUS] and not self.is_unassigned
+
+    @property
+    def shirt_size_marked(self):
+        return self.shirt not in [NO_SHIRT, SIZE_UNKNOWN]
+
+    @property
     def unassigned_name(self):
         if self.group_id and self.is_unassigned:
             return '[Unassigned {self.badge}]'.format(self=self)
@@ -665,25 +678,25 @@ class Attendee(MagModel, TakesPaymentMixin):
         return case([
             (or_(cls.first_name == None, cls.first_name == ''), 'zzz')
         ], else_ = func.lower(cls.last_name + ', ' + cls.first_name))
-        
+
     @property
     def can_volunteer(self):
         if self.age_group: return self.age_group.can_volunteer
         with Session() as session:
             return session.age_group_from_birthdate(self.birthdate).can_volunteer
-            
+
     @property
     def can_register(self):
         if self.age_group: return self.age_group.can_register
         with Session() as session:
             return session.age_group_from_birthdate(self.birthdate).can_register
-            
+
     @property
     def age_discount(self):
         if self.age_group: return self.age_group.discount
         with Session() as session:
             return session.age_group_from_birthdate(self.birthdate).discount
-            
+
     @property
     def consent_form(self):
         if self.age_group: return self.age_group.consent_form
@@ -695,6 +708,14 @@ class Attendee(MagModel, TakesPaymentMixin):
         if self.age_group: return self.age_group.desc
         with Session() as session:
             return session.age_group_from_birthdate(self.birthdate).desc
+
+    @property
+    def watchlist_entry(self):
+        try:
+            with Session() as session:
+                return session.get_attendee_watchentry(self).__dict__
+        except:
+            return None
 
     @property
     def banned(self):
@@ -721,11 +742,22 @@ class Attendee(MagModel, TakesPaymentMixin):
            and self.badge_type in TRANSFERABLE_BADGE_TYPES
 
     @property
+    def gets_free_shirt(self):
+        return self.is_dept_head \
+            or self.badge_type == STAFF_BADGE \
+            or self.staffing and (self.assigned_depts and not self.takes_shifts or self.weighted_hours >= 6)
+
+    @property
+    def gets_paid_shirt(self):
+        return self.amount_extra >= SHIRT_LEVEL or self.badge_type == SUPPORTER_BADGE
+
+    @property
     def gets_shirt(self):
-        return self.amount_extra >= SHIRT_LEVEL \
-            or self.is_dept_head \
-            or self.badge_type in [SUPPORTER_BADGE] \
-            or (self.worked_hours >= 6 and (self.worked_hours < 18 or self.worked_hours >= 24))
+        return self.gets_paid_shirt or self.gets_free_shirt
+
+    @property
+    def shirt_eligible(self):
+        return self.gets_shirt or self.staffing
 
     @property
     def has_personalized_badge(self):
@@ -733,17 +765,19 @@ class Attendee(MagModel, TakesPaymentMixin):
 
     @property
     def donation_swag(self):
-        if MODE == "magstock":
-            return ['No shirt'] if self.shirt == NO_SHIRT else [self.shirt_label + ", " + self.shirt_color_label]
-        else:
-            extra = SUPPORTER_LEVEL if not self.amount_extra and self.badge_type == SUPPORTER_BADGE else self.amount_extra
-            return [desc for amount,desc in sorted(DONATION_TIERS.items()) if amount and extra >= amount]
+        extra = SUPPORTER_LEVEL if not self.amount_extra and self.badge_type == SUPPORTER_BADGE else self.amount_extra
+        return [desc for amount,desc in sorted(DONATION_TIERS.items()) if amount and extra >= amount]
 
     @property
     def merch(self):
         merch = self.donation_swag
         if self.gets_shirt and DONATION_TIERS[SHIRT_LEVEL] not in merch:
             merch.append(DONATION_TIERS[SHIRT_LEVEL])
+        elif self.gets_free_shirt:
+            shirt = '2nd ' + DONATION_TIERS[SHIRT_LEVEL]
+            if self.takes_shifts and self.worked_hours < 6:
+                shirt += ' (tell them they will be reported if they take their shirt and then do not work their shifts)'
+            merch.append(shirt)
         if self.extra_merch:
             merch.append(self.extra_merch)
         return comma_and(merch)
@@ -751,10 +785,13 @@ class Attendee(MagModel, TakesPaymentMixin):
     @property
     def accoutrements(self):
         stuff = [] if self.ribbon == NO_RIBBON else ['a ' + self.ribbon_label + ' ribbon']
-        stuff.append('a {} wristband'.format(WRISTBAND_COLORS[self.age_group]))
         if self.regdesk_info:
             stuff.append(self.regdesk_info)
         return comma_and(stuff)
+
+    @property
+    def is_single_dept_head(self):
+        return self.is_dept_head and len(self.assigned_depts_ints) == 1
 
     @property
     def multiply_assigned(self):
@@ -767,6 +804,16 @@ class Attendee(MagModel, TakesPaymentMixin):
     @property
     def hotel_shifts_required(self):
         return bool(SHIFTS_CREATED and self.hotel_nights and self.ribbon != DEPT_HEAD_RIBBON and self.takes_shifts)
+
+    @property
+    def approved_for_setup(self):
+        hr = self.hotel_requests
+        return bool(hr and hr.approved and set(hr.nights_ints).intersection(SETUP_NIGHTS))
+
+    @property
+    def approved_for_teardown(self):
+        hr = self.hotel_requests
+        return bool(hr and hr.approved and set(hr.nights_ints).intersection(TEARDOWN_NIGHTS))
 
     @property
     def hours(self):
@@ -795,6 +842,8 @@ class Attendee(MagModel, TakesPaymentMixin):
                                        .order_by(Job.start_time).all()
                         if job.slots > len(job.shifts)
                            and job.no_overlap(self)
+                           and (job.type != SETUP or self.approved_for_setup)
+                           and (job.type != TEARDOWN or self.approved_for_teardown)
                            and (not job.restricted or self.trusted)]
 
     @property
@@ -816,7 +865,7 @@ class Attendee(MagModel, TakesPaymentMixin):
 
     @property
     def weighted_hours(self):
-        wh = sum((shift.job.real_duration * shift.job.weight for shift in self.shifts), 0.0)
+        wh = sum((shift.job.weighted_hours for shift in self.shifts), 0.0)
         return wh + self.nonshift_hours
 
     @property
@@ -828,16 +877,15 @@ class Attendee(MagModel, TakesPaymentMixin):
         return department in self.requested_depts_ints
 
     def assigned_to(self, department):
-        return department in self.assigned_depts_ints
+        return int(department or 0) in self.assigned_depts_ints
 
     def has_shifts_in(self, department):
         return any(shift.job.location == department for shift in self.shifts)
 
     @property
     def shift_prereqs_complete(self):
-        return not self.placeholder \
-           and self.fire_safety_cert \
-           and (self.badge_type != STAFF_BADGE or self.hotel_requests is not None or not state.BEFORE_ROOM_DEADLINE)
+        return not self.placeholder and self.food_restrictions and self.shirt_size_marked \
+            and (self.badge_type != STAFF_BADGE or self.hotel_requests or not state.BEFORE_ROOM_DEADLINE)
 
     @property
     def past_years_json(self):
@@ -847,10 +895,10 @@ class Attendee(MagModel, TakesPaymentMixin):
     def hotel_eligible(self):
         return ROOM_DEADLINE and self.badge_type == STAFF_BADGE
 
-    @cached_property
+    @property
     def hotel_nights(self):
         try:
-            return [dict(NIGHT_OPTS)[night] for night in map(int, self.hotel_requests.nights.split(','))]
+            return self.hotel_requests.nights
         except:
             return []
 
@@ -866,13 +914,19 @@ class Attendee(MagModel, TakesPaymentMixin):
         else:
             return 'Hotel nights: ' + hr.nights_display
 
+class WatchList(MagModel):
+    first_name = Column(UnicodeText)
+    last_name = Column(UnicodeText)
+    disabled = Column(Boolean, default=False)
+    reason = Column(UnicodeText)
+    action = Column(UnicodeText)
 
 class AdminAccount(MagModel):
     attendee_id = Column(UUID, ForeignKey('attendee.id'), unique=True)
     hashed      = Column(UnicodeText)
     access      = Column(MultiChoice(ACCESS_OPTS))
 
-    password_reset = relationship('PasswordReset', backref='admin_account', uselist=False, cascade='delete')
+    password_reset = relationship('PasswordReset', backref='admin_account', uselist=False, cascade='all,delete-orphan')
 
     def __repr__(self):
         return '<{}>'.format(self.attendee.full_name)
@@ -885,7 +939,7 @@ class AdminAccount(MagModel):
     def admin_name():
         try:
             with Session() as session:
-                return session.admin_account(cherrypy.session['account_id']).attendee.full_name
+                return session.admin_attendee().full_name
         except:
             return None
 
@@ -917,39 +971,35 @@ class HotelRequests(MagModel, NightsMixin):
 
     _unrestricted = ['attendee_id', 'nights', 'wanted_roommates', 'unwanted_roommates', 'special_needs']
 
-    # TODO: fix this to work with SQLAlchemy
-    @classmethod
-    def in_dept(cls, department):
-        return HotelRequests.objects.filter(attendee__assigned_depts__contains = department) \
-                                    .exclude(nights='') \
-                                    .order_by('attendee__first_name', 'attendee__last_name') \
-                                    .select_related()
-
     def decline(self):
-        self.nights = ','.join(night for night in self.nights.split(',') if int(night) in {THURSDAY, FRIDAY, SATURDAY})
+        self.nights = ','.join(night for night in self.nights.split(',') if int(night) in CORE_NIGHTS)
 
     def __repr__(self):
         return '<{self.attendee.full_name} Hotel Requests>'.format(self=self)
 
 class FoodRestrictions(MagModel):
-    attendee_id = Column(UUID, ForeignKey('attendee.id'), unique=True)
-    standard    = Column(MultiChoice(FOOD_RESTRICTION_OPTS))
-    freeform    = Column(UnicodeText)
+    attendee_id   = Column(UUID, ForeignKey('attendee.id'), unique=True)
+    standard      = Column(MultiChoice(FOOD_RESTRICTION_OPTS))
+    sandwich_pref = Column(Choice(SANDWICH_OPTS))
+    no_cheese     = Column(Boolean, default=False)
+    freeform      = Column(UnicodeText)
 
     def __getattr__(self, name):
-        restriction = getattr(config, name.upper())
-        if restriction not in dict(FOOD_RESTRICTION_OPTS):
-            raise AttributeError()
-        elif restriction == VEGETARIAN and str(VEGAN) in self.standard.split(','):
+        restriction = globals().get(name.upper())
+        if restriction not in FOOD_RESTRICTIONS:
+            return MagModel.__getattr__(self, name)
+        elif restriction == VEGETARIAN and VEGAN in self.standard_ints:
             return False
+        elif restriction == PORK and {VEGETARIAN, VEGAN}.intersection(self.standard_ints):
+            return True
         else:
-            return str(restriction) in self.standard.split(',')
+            return restriction in self.standard_ints
 
 class AssignedPanelist(MagModel):
-    attendee_id = Column(UUID, ForeignKey('attendee.id'))
-    attendee    = relationship(Attendee, backref='assigned_panelists', cascade='delete')
-    event_id    = Column(UUID, ForeignKey('event.id'))
-    event       = relationship(Event, backref='assigned_panelists', cascade='delete')
+    attendee_id = Column(UUID, ForeignKey('attendee.id', ondelete='cascade'))
+    attendee    = relationship(Attendee, backref=backref('assigned_panelists', cascade='all,delete-orphan'))
+    event_id    = Column(UUID, ForeignKey('event.id', ondelete='cascade'))
+    event       = relationship(Event, backref=backref('assigned_panelists', cascade='all,delete-orphan'))
 
     def __repr__(self):
         return '<{self.attendee.full_name} panelisting {self.event.name}>'.format(self=self)
@@ -966,23 +1016,41 @@ class Room(MagModel, NightsMixin):
     department = Column(Choice(JOB_LOCATION_OPTS))
     notes      = Column(UnicodeText)
     nights     = Column(MultiChoice(NIGHT_OPTS))
+    created    = Column(UTCDateTime, server_default=utcnow())
 
 class RoomAssignment(MagModel):
     room_id     = Column(UUID, ForeignKey('room.id'))
-    room        = relationship(Room, backref='room_assignments', cascade='delete')
+    room        = relationship(Room, backref='room_assignments')
     attendee_id = Column(UUID, ForeignKey('attendee.id'), unique=True)
 
 class NoShirt(MagModel):
     attendee_id = Column(UUID, ForeignKey('attendee.id'), unique=True)
 
+class MerchPickup(MagModel):
+    picked_up_by_id  = Column(UUID, ForeignKey('attendee.id'))
+    picked_up_for_id = Column(UUID, ForeignKey('attendee.id'), unique=True)
+    picked_up_by     = relationship(Attendee, primaryjoin='MerchPickup.picked_up_by_id == Attendee.id')
+    picked_up_for    = relationship(Attendee, primaryjoin='MerchPickup.picked_up_for_id == Attendee.id')
+
+class DeptChecklistItem(MagModel):
+    attendee_id = Column(UUID, ForeignKey('attendee.id'))
+    attendee    = relationship(Attendee, backref=backref('dept_checklist_items', cascade='all,delete-orphan'))
+    slug        = Column(UnicodeText)
+    comments    = Column(UnicodeText, default='')
+
+    __table_args__ = (
+        UniqueConstraint('attendee_id', 'slug', name='_dept_checklist_item_uniq'),
+    )
+
 
 class Job(MagModel):
+    type        = Column(Choice(JOB_TYPE_OPTS), default=REGULAR)
     name        = Column(UnicodeText)
     description = Column(UnicodeText)
     location    = Column(Choice(JOB_LOCATION_OPTS))
     start_time  = Column(UTCDateTime)
     duration    = Column(Integer)
-    weight      = Column(Float)
+    weight      = Column(Float, default=1)
     slots       = Column(Integer)
     restricted  = Column(Boolean, default=False)
     extra15     = Column(Boolean, default=False)
@@ -996,6 +1064,10 @@ class Job(MagModel):
             hours.add(self.start_time + timedelta(hours=i))
         return hours
 
+    @property
+    def end_time(self):
+        return self.start_time + timedelta(hours=self.duration)
+
     def no_overlap(self, attendee):
         before = self.start_time - timedelta(hours=1)
         after  = self.start_time + timedelta(hours=self.duration)
@@ -1006,6 +1078,22 @@ class Job(MagModel):
             and (after not in attendee.hour_map
                 or not self.extra15
                 or self.location == attendee.hour_map[after].location))
+
+    @property
+    def slots_taken(self):
+        return len(self.shifts)
+
+    @property
+    def slots_untaken(self):
+        return max(0, self.slots - self.slots_taken)
+
+    @property
+    def is_setup(self):
+        return self.start_time < EPOCH
+
+    @property
+    def is_teardown(self):
+        return self.start_time >= ESCHATON
 
     @property
     def real_duration(self):
@@ -1051,19 +1139,19 @@ class Shift(MagModel):
 
 class MPointsForCash(MagModel):
     attendee_id = Column(UUID, ForeignKey('attendee.id'))
-    attendee    = relationship(Attendee, backref='mpoints_for_cash', cascade='delete')
+    attendee    = relationship(Attendee, backref=backref('mpoints_for_cash', cascade='all,delete-orphan'))
     amount      = Column(Integer)
     when        = Column(UTCDateTime, default=lambda: datetime.now(UTC))
 
 class OldMPointExchange(MagModel):
     attendee_id = Column(UUID, ForeignKey('attendee.id'))
-    attendee    = relationship(Attendee, backref='old_mpoint_exchanges', cascade='delete')
+    attendee    = relationship(Attendee, backref=backref('old_mpoint_exchanges', cascade='all,delete-orphan'))
     amount      = Column(Integer)
     when        = Column(UTCDateTime, default=lambda: datetime.now(UTC))
 
 class Sale(MagModel):
-    attendee_id    = Column(UUID, ForeignKey('attendee.id'), nullable=True)
-    attendee       = relationship(Attendee, backref='sales', cascade='delete')
+    attendee_id    = Column(UUID, ForeignKey('attendee.id', ondelete='set null'), nullable=True)
+    attendee       = relationship(Attendee, backref=backref('sales', cascade='all'))
     what           = Column(UnicodeText)
     cash           = Column(Integer, default=0)
     mpoints        = Column(Integer, default=0)
@@ -1085,17 +1173,25 @@ class Game(MagModel):
     code        = Column(UnicodeText)
     name        = Column(UnicodeText)
     attendee_id = Column(UUID, ForeignKey('attendee.id'))
-    attendee    = relationship(Attendee, backref='games', cascade='delete')
+    attendee    = relationship(Attendee, backref=backref('games', cascade='all,delete-orphan'))
     returned    = Column(Boolean, default=False)
-    checked_out = relationship('Checkout', backref='game', uselist=False, cascade='delete')
+
+    @property
+    def checked_out(self):
+        try:
+            return [c for c in self.checkouts if not c.returned][0]
+        except:
+            pass
 
     _repr_attr_names = ['name']
 
 class Checkout(MagModel):
-    game_id     = Column(UUID, ForeignKey('game.id'), unique=True)
+    game_id     = Column(UUID, ForeignKey('game.id'))
+    game        = relationship('Game', backref=backref('checkouts', cascade='all,delete-orphan'))
     attendee_id = Column(UUID, ForeignKey('attendee.id'))
-    attendee    = relationship(Attendee, backref='checkouts', cascade='delete')
-    when        = Column(UTCDateTime, default=lambda: datetime.now(UTC))
+    attendee    = relationship(Attendee, backref=backref('checkouts', cascade='all,delete-orphan'))
+    checked_out = Column(UTCDateTime, default=lambda: datetime.now(UTC))
+    returned    = Column(UTCDateTime, nullable=True)
 
 
 
@@ -1166,7 +1262,7 @@ class Tracking(MagModel):
                 return '<bcrypted>'
             elif isinstance(column.type, MultiChoice):
                 opts = dict(column.type.choices)
-                return repr('' if not value else (','.join(opts[int(opt)] for opt in value.split(',') if opt in opts)))
+                return repr('' if not value else (','.join(opts[int(opt)] for opt in value.split(',') if int(opt or 0) in opts)))
             elif isinstance(column.type, Choice) and value is not None:
                 return repr(dict(column.type.choices).get(int(value), '<nonstandard>'))
             else:
@@ -1254,7 +1350,7 @@ Tracking.UNTRACKED = [Tracking, Email]
 
 
 class Session(SessionManager):
-    engine = sqlalchemy.create_engine(SQLALCHEMY_URL)
+    engine = sqlalchemy.create_engine(SQLALCHEMY_URL, pool_size=50, max_overflow=100)
 
     class QuerySubclass(Query):
         @property
@@ -1277,25 +1373,47 @@ class Session(SessionManager):
             query = self
             if len(self.column_descriptions) == 1 and filters:
                 for colname, val in filters.items():
-                    query = query.filter(getattr(self.model, colname).ilike('%' + val + '%'))
-            if attr and col:
-                query = self.filter(attr.ilike('%' + text + '%'))
+                    query = query.filter(getattr(self.model, colname).ilike('%{}%'.format(val)))
+            if attr and val:
+                query = self.filter(attr.ilike('%{}%'.format(val)))
             return query
 
         def iexact(self, **filters):
             return self.filter(*[func.lower(getattr(self.model, attr)) == func.lower(val) for attr, val in filters.items()])
 
     class SessionMixin:
+        def admin_attendee(self):
+            return self.admin_account(cherrypy.session['account_id']).attendee
+
         def logged_in_volunteer(self):
             return self.attendee(cherrypy.session['staffer_id'])
 
+        def checklist_status(self, slug, department):
+            attendee = self.admin_attendee()
+            conf = DeptChecklistConf.instances[slug]
+            return {
+                'conf': conf,
+                'relevant': attendee.is_single_dept_head and attendee.assigned_depts_ints == [int(department or 0)],
+                'completed': conf.completed(attendee)
+            }
+
         def jobs_for_signups(self):
             fields = ['name', 'location_label', 'description', 'weight', 'start_time_local', 'duration', 'weighted_hours', 'restricted', 'extra15', 'taken']
-            return [job.to_dict(fields) for job in self.logged_in_volunteer().possible_and_current]
+            jobs = self.logged_in_volunteer().possible_and_current
+            restricted_hours = set()
+            for job in jobs:
+                if job.restricted:
+                    restricted_hours.add(frozenset(job.hours))
+            return [job.to_dict(fields) for job in jobs if job.restricted or frozenset(job.hours) not in restricted_hours]
 
         def get_account_by_email(self, email):
             return self.query(AdminAccount).join(Attendee).filter(func.lower(Attendee.email) == func.lower(email)).one()
-            
+
+        def get_attendee_watchentry(self, attendee):
+            return self.query(WatchList).filter(and_(WatchList.first_name == attendee.first_name,
+                                                     WatchList.last_name == attendee.last_name,
+                                                     WatchList.disabled == False)).one()
+
         def age_group_from_birthdate(self, birthdate):
             if not birthdate: return None
             calc_date = EPOCH.date() if date.today() <= EPOCH.date() else date.today()
@@ -1420,8 +1538,8 @@ class Session(SessionManager):
 
 
         def everyone(self):
-            attendees = self.query(Attendee).options(joinedload(Attendee.group)).all()
-            groups = self.query(Group).options(joinedload(Group.attendees)).all()
+            attendees = self.query(Attendee).filter(Attendee.status.in_([NEW_STATUS, COMPLETED_STATUS, PRINTED_STATUS])).options(joinedload(Attendee.group)).all()
+            groups = self.query(Group).filter(Group.status != DECLINED).options(joinedload(Group.attendees)).all()
             return attendees, groups
 
         def staffers(self):
@@ -1429,6 +1547,12 @@ class Session(SessionManager):
                        .filter_by(staffing=True) \
                        .options(joinedload(Attendee.group)) \
                        .order_by(Attendee.full_name)
+
+        def single_dept_heads(self, dept=None):
+            assigned = {'assigned_depts': str(dept)} if dept else {}
+            return self.query(Attendee) \
+                       .filter_by(ribbon=DEPT_HEAD_RIBBON, **assigned) \
+                       .order_by(Attendee.full_name).all()
 
         def match_to_group(self, attendee, group):
             with BADGE_LOCK:
@@ -1441,9 +1565,9 @@ class Session(SessionManager):
                 else:
                     for attr in ['group', 'paid', 'amount_paid', 'ribbon']:
                         setattr(attendee, attr, getattr(matching[0], attr))
-                    session.delete(matching[0])
-                    session.add(attendee)
-                    session.commit()
+                    self.delete(matching[0])
+                    self.add(attendee)
+                    self.commit()
 
         def everything(self, location=None):
             location_filter = [Job.location == location] if location else []
@@ -1485,6 +1609,9 @@ class Session(SessionManager):
                 return attendees.filter(Attendee.badge_num == terms[0])
             elif len(terms) == 1 and re.match('[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}', terms[0]):
                 return attendees.filter(or_(Attendee.id == terms[0], Group.id == terms[0]))
+            elif len(terms) == 1 and re.match('[0-9]+-[0-9]+', terms[0]):
+                first_num, second_num = terms[0].split('-')
+                return attendees.filter(Attendee.badge_num.between(first_num, second_num))
             else:
                 checks = [Group.name.ilike('%' + text + '%')]
                 for attr in ['first_name', 'last_name', 'badge_printed_name', 'email', 'comments', 'admin_notes', 'for_review']:
@@ -1504,6 +1631,7 @@ class Session(SessionManager):
 
         def assign_badges(self, group, new_badge_count, new_badge_type = ATTENDEE_BADGE, **extra_create_args):
             diff = int(new_badge_count) - group.badges
+            sorted_unassigned = sorted(group.floating, key=lambda a: a.registered, reverse=True)
             if diff > 0:
                 for i in range(diff):
                     group.attendees.append(Attendee(badge_type=new_badge_type, ribbon=group.new_ribbon, paid=PAID_BY_GROUP, **extra_create_args))
@@ -1511,7 +1639,7 @@ class Session(SessionManager):
                 if len(group.floating) < abs(diff):
                     return 'You cannot reduce the number of badges for a group to below the number of assigned badges'
                 else:
-                    for attendee in group.floating[:abs(diff)]:
+                    for attendee in sorted_unassigned[:abs(diff)]:
                         self.delete_from_group(attendee, group)
 
         def assign(self, attendee_id, job_id):

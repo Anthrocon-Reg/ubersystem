@@ -1,6 +1,6 @@
 from uber.common import *
 
-@all_renderable(PEOPLE)
+@all_renderable(PEOPLE, REG_AT_CON)
 class Root:
     def index(self, session, message='', order='name', show='all'):
         which = {
@@ -69,10 +69,8 @@ class Root:
             send_email(MARKETPLACE_EMAIL, group.email, subject, email, model = group)
         if action == 'waitlisted':
             group.status = WAITLISTED
-        #else:
-            #for attendee in group.attendees:
-                #session.delete(attendee)
-            #session.delete(group)
+        else:
+            self.delete()
         session.commit()
         return {'success': True}
 
@@ -83,9 +81,9 @@ class Root:
             raise HTTPRedirect('deletion_confirmation?id={}', id)
         else:
             Tracking.track(INVALIDATED, group)
-            #for attendee in group.attendees:
-                #session.delete(attendee)
-            #session.delete(group)
+            for attendee in group.attendees:
+                attendee.status = INVALID_STATUS
+            group.status = DECLINED
             raise HTTPRedirect('index?message={}', 'Group deleted')
 
     def deletion_confirmation(self, session, id):
