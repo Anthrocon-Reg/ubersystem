@@ -227,18 +227,16 @@ class Root:
         for attendee in charge.attendees:
             attendee.paid = HAS_PAID
             attendee.amount_paid = attendee.total_cost
-            attendee.registered = localized_now()
-            session.merge(attendee)
+            session.add(attendee)
             if attendee.full_name in BANNED_ATTENDEES:
                 send_banned_email(attendee)
 
         for group in charge.groups:
             group.amount_paid = group.default_cost - group.amount_extra
             for attendee in group.attendees:
-                attendee.registered = localized_now()
                 if attendee.amount_extra:
                     attendee.amount_paid = attendee.amount_extra
-            session.merge(group)
+            session.add(group)
             session.commit()  # commit now so group.leader will resolve
             if group.leader.full_name in BANNED_ATTENDEES:
                 send_banned_email(group.leader)
